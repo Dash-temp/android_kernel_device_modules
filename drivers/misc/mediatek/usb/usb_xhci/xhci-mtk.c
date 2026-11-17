@@ -927,12 +927,16 @@ static int xhci_mtk_probe(struct platform_device *pdev)
 		offload_pdev = of_find_device_by_node(offload_node);
 		of_node_put(offload_node);
 		if (offload_pdev) {
+			/* Do not consume callbacks from an unfinished provider probe. */
+			device_lock(&offload_pdev->dev);
 			ops = dev_get_drvdata(&offload_pdev->dev);
 			if (ops) {
 				dev_info(dev, "set offload vendor_ops data\n");
 				xhci->vendor_ops = ops;
 			} else
 				dev_info(dev, "failed to get offload data\n");
+			device_unlock(&offload_pdev->dev);
+			put_device(&offload_pdev->dev);
 		} else
 			dev_info(dev, "failed to get offload platform device\n");
 	}

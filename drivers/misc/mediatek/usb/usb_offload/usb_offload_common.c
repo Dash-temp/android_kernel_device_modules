@@ -3052,6 +3052,11 @@ int xhci_mtk_ssusb_offload_get_mode(struct device *dev)
 		return is_in_advanced ? SSUSB_OFFLOAD_MODE_S_SS : SSUSB_OFFLOAD_MODE_D_SS;
 }
 
+static void usb_offload_unlink_mtu3(void *data)
+{
+	device_link_del(data);
+}
+
 static void usb_offload_link_mtu3(struct device *uo_dev)
 {
 	struct device_node *node;
@@ -3075,10 +3080,15 @@ static void usb_offload_link_mtu3(struct device *uo_dev)
 		if (!link) {
 			USB_OFFLOAD_ERR("fail to link mtu3\n");
 			hid_disable_offload = 1;
+		} else if (devm_add_action_or_reset(uo_dev,
+						usb_offload_unlink_mtu3, link)) {
+			USB_OFFLOAD_ERR("fail to manage mtu3 link\n");
+			hid_disable_offload = 1;
 		} else {
 			USB_OFFLOAD_ERR("success to link mtu3\n");
 			hid_disable_offload = 0;
 		}
+		put_device(&pdev->dev);
 put_node:
 		of_node_put(node);
 	} else {
@@ -3087,11 +3097,24 @@ put_node:
 	}
 }
 
+static void usb_offload_unregister_adsp_notify(void)
+{
+#ifdef CFG_RECOVERY_SUPPORT
+	if (get_adsp_type() == ADSP_TYPE_HIFI3)
+		adsp_unregister_notify(&adsp_usb_offload_notifier);
+#endif
+}
+
 static int usb_offload_probe(struct platform_device *pdev)
 {
 	struct device_node *node_xhci_host;
 	int ret = 0;
 	int dsp_type;
+
+	if (!ssusb_offload_enabled()) {
+		dev_info(&pdev->dev, "USB offload disabled by controller policy\n");
+		return -EOPNOTSUPP;
+	}
 
 	uodev = devm_kzalloc(&pdev->dev, sizeof(struct usb_offload_dev),
 		GFP_KERNEL);
@@ -3101,6 +3124,9 @@ static int usb_offload_probe(struct platform_device *pdev)
 	}
 
 	uodev->dev = &pdev->dev;
+	mutex_init(&uodev->dev_lock);
+	mutex_init(&uodev->xhci_lock);
+	mutex_init(&uodev->event_lock);
 	uodev->enable_adv_lowpwr =
 		of_property_read_bool(pdev->dev.of_node, "adv-lowpower");
 	uodev->adv_lowpwr = uodev->enable_adv_lowpwr;
@@ -3163,23 +3189,9 @@ static int usb_offload_probe(struct platform_device *pdev)
 		}
 		uodev->ssusb_offload_notify->dev = uodev->dev;
 		uodev->ssusb_offload_notify->get_mode = xhci_mtk_ssusb_offload_get_mode;
-		ret = ssusb_offload_register(uodev->ssusb_offload_notify);
-		if (ret) {
-			USB_OFFLOAD_ERR("Fail to register ssusb_offload\n");
-			ret = -ENOMEM;
-			goto REG_SSUSB_OFFLOAD_FAIL;
-		}
-		mutex_init(&uodev->dev_lock);
-		mutex_init(&uodev->xhci_lock);
-		mutex_init(&uodev->event_lock);
-
-		USB_OFFLOAD_INFO("Set XHCI vendor hook ops\n");
-		platform_set_drvdata(pdev, &xhci_mtk_vendor_ops);
 		dsp_type = get_adsp_type();
 		if (dsp_type == ADSP_TYPE_HIFI3) {
-#ifdef CFG_RECOVERY_SUPPORT
-			adsp_register_notify(&adsp_usb_offload_notifier);
-#else
+#ifndef CFG_RECOVERY_SUPPORT
 			USB_OFFLOAD_ERR("Do not register notifier. Recovery not enabled\n");
 #endif
 		} else if (dsp_type == ADSP_TYPE_RV55) {
@@ -3212,12 +3224,43 @@ static int usb_offload_probe(struct platform_device *pdev)
 	buf_seg = kzalloc(sizeof(struct usb_offload_buffer) * BUF_SEG_SIZE, GFP_KERNEL);
 	buf_ev_table = kzalloc(sizeof(struct usb_offload_buffer), GFP_KERNEL);
 	buf_ev_ring = kzalloc(sizeof(struct usb_offload_buffer), GFP_KERNEL);
+	if (!buf_seg || !buf_ev_table || !buf_ev_ring) {
+		ret = -ENOMEM;
+		goto FREE_BUFFERS;
+	}
 
-	usb_offload_hid_probe();
+	ret = usb_offload_hid_probe();
+	if (ret)
+		goto FREE_BUFFERS;
 	usb_offload_debug_init(uodev);
 
+#ifdef CFG_RECOVERY_SUPPORT
+	if (dsp_type == ADSP_TYPE_HIFI3)
+		adsp_register_notify(&adsp_usb_offload_notifier);
+#endif
+
+	/* Publish complete callbacks before allowing MTU3 to start the host. */
+	platform_set_drvdata(pdev, &xhci_mtk_vendor_ops);
+	ret = ssusb_offload_register(uodev->ssusb_offload_notify);
+	if (ret) {
+		USB_OFFLOAD_ERR("Fail to register ssusb_offload: %d\n", ret);
+		platform_set_drvdata(pdev, NULL);
+		goto REMOVE_HID;
+	}
+
+	of_node_put(node_xhci_host);
 	USB_OFFLOAD_INFO("Probe Success!!!");
 	return ret;
+REMOVE_HID:
+	usb_offload_unregister_adsp_notify();
+	usb_offload_hid_remove();
+FREE_BUFFERS:
+	kfree(buf_ev_ring);
+	buf_ev_ring = NULL;
+	kfree(buf_ev_table);
+	buf_ev_table = NULL;
+	kfree(buf_seg);
+	buf_seg = NULL;
 GET_DSP_TYPE_FAIL:
 REG_SSUSB_OFFLOAD_FAIL:
 	kfree(uodev->ssusb_offload_notify);
@@ -3238,6 +3281,8 @@ static int usb_offload_remove(struct platform_device *pdev)
 	ret = ssusb_offload_unregister(uodev->ssusb_offload_notify);
 	if (ret)
 		USB_OFFLOAD_ERR("ssusb_offload_unregister failed!\n");
+
+	usb_offload_unregister_adsp_notify();
 
 	kfree(buf_ev_table);
 	buf_ev_table = NULL;

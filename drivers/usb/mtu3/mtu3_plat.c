@@ -58,6 +58,19 @@ enum ssusb_hwrscs_vers {
 static DEFINE_MUTEX(vsv_mutex);
 static unsigned int vsv_use_count;
 
+/* Serialize role requests and offload readiness without changing exported types. */
+DEFINE_SPINLOCK(ssusb_role_lock);
+
+static bool offload = true;
+module_param(offload, bool, 0444);
+MODULE_PARM_DESC(offload, "Enable USB offload and wait for its provider before host mode");
+
+bool ssusb_offload_enabled(void)
+{
+	return offload;
+}
+EXPORT_SYMBOL_GPL(ssusb_offload_enabled);
+
 #if IS_ENABLED(CONFIG_MTK_SPM_V4)
 static void (*slp_set_infra_on)(bool infra_on);
 static bool (*spm_resource_req_by_usb)(unsigned int user, unsigned int req_mask);
@@ -726,8 +739,15 @@ bus_idle:
 	return 0;
 }
 
-static int ssusb_offload_get_mode(struct ssusb_offload *offload)
+static int ssusb_offload_get_mode(struct ssusb_mtk *ssusb)
 {
+	struct ssusb_offload *offload;
+	unsigned long flags;
+
+	spin_lock_irqsave(&ssusb_role_lock, flags);
+	offload = ssusb->offload;
+	spin_unlock_irqrestore(&ssusb_role_lock, flags);
+
 	if (offload && offload->get_mode)
 		return offload->get_mode(offload->dev);
 	else
@@ -739,7 +759,11 @@ int ssusb_offload_register(struct ssusb_offload *offload)
 	struct device_node *node;
 	struct platform_device *pdev;
 	struct ssusb_mtk *ssusb;
+	unsigned long flags;
 	int ret = 0;
+
+	if (!ssusb_offload_enabled())
+		return -EOPNOTSUPP;
 
 	node = of_find_node_by_name(NULL, "usb0");
 	if (!node) {
@@ -758,21 +782,28 @@ int ssusb_offload_register(struct ssusb_offload *offload)
 	if (IS_ERR_OR_NULL(offload) || IS_ERR_OR_NULL(offload->dev) ||
 		IS_ERR_OR_NULL(ssusb)) {
 		ret = -EINVAL;
-		goto err;
+		goto put_device;
 	}
 
+	spin_lock_irqsave(&ssusb_role_lock, flags);
 	if (offload->ssusb) {
 		ret = -EEXIST;
-		goto err;
+		goto unlock;
 	}
 
 	offload->ssusb = ssusb;
 	ssusb->offload = offload;
 
-	if (ssusb->otg_switch.latest_role == USB_ROLE_HOST) {
+	if (ssusb->otg_switch.op_mode == MTU3_DR_OPERATION_HOST ||
+	    (ssusb->otg_switch.op_mode == MTU3_DR_OPERATION_DUAL &&
+	     ssusb->otg_switch.latest_role == USB_ROLE_HOST)) {
 		dev_info(ssusb->dev, "usb offload ready, switch to host\n");
-		ssusb_set_mode(&ssusb->otg_switch, USB_ROLE_HOST);
+		ssusb_queue_mode(&ssusb->otg_switch, USB_ROLE_HOST);
 	}
+unlock:
+	spin_unlock_irqrestore(&ssusb_role_lock, flags);
+put_device:
+	put_device(&pdev->dev);
 err:
 	return ret;
 }
@@ -780,7 +811,8 @@ EXPORT_SYMBOL_GPL(ssusb_offload_register);
 
 int ssusb_offload_unregister(struct ssusb_offload *offload)
 {
-	struct ssusb_mtk *ssusb = offload->ssusb;
+	struct ssusb_mtk *ssusb;
+	unsigned long flags;
 	int ret = 0;
 
 	if (IS_ERR_OR_NULL(offload) || IS_ERR_OR_NULL(offload->ssusb)) {
@@ -788,8 +820,11 @@ int ssusb_offload_unregister(struct ssusb_offload *offload)
 		goto err;
 	}
 
+	ssusb = offload->ssusb;
+	spin_lock_irqsave(&ssusb_role_lock, flags);
 	offload->ssusb = NULL;
 	ssusb->offload = NULL;
+	spin_unlock_irqrestore(&ssusb_role_lock, flags);
 err:
 	return ret;
 }
@@ -1619,7 +1654,7 @@ static int mtu3_suspend_common(struct device *dev, pm_message_t msg)
 	else
 		ssusb->host_dev = true;
 
-	ssusb->offload_mode = ssusb_offload_get_mode(ssusb->offload);
+	ssusb->offload_mode = ssusb_offload_get_mode(ssusb);
 
 	dev_info(ssusb->dev, "%s offload_mode %d\n", __func__, ssusb->offload_mode);
 

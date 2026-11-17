@@ -98,7 +98,7 @@ static struct workqueue_struct *giveback_wq;
 static struct wakeup_source *hid_wake_lock;
 static DECLARE_COMPLETION(hid_dequeue_done);
 
-static void xhci_mtk_trace_init(void);
+static int xhci_mtk_trace_init(void);
 static int sned_payload_to_adsp(unsigned int msg_id,
 		void *payload, unsigned int length, int need_ack);
 
@@ -877,12 +877,14 @@ void usb_offload_hid_stop(void)
 
 }
 
-void usb_offload_hid_probe(void)
+int usb_offload_hid_probe(void)
 {
 	struct hid_ep_info *hid;
-	int i, cnt;
+	int i, cnt, ret;
 
 	giveback_wq = create_singlethread_workqueue("uo_hid_giveback");
+	if (!giveback_wq)
+		return -ENOMEM;
 	for (i = 0; i < UO_HID_EP_NUM; i++) {
 		hid = &hid_ep[i];
 		hid->dir = i;
@@ -898,8 +900,34 @@ void usb_offload_hid_probe(void)
 	}
 
 	hid_wake_lock = wakeup_source_register(NULL, "usb hid wakelock");
+	if (!hid_wake_lock) {
+		ret = -ENOMEM;
+		goto destroy_workqueue;
+	}
 
-	xhci_mtk_trace_init();
+	ret = xhci_mtk_trace_init();
+	if (ret)
+		goto unregister_wakeup;
+
+	return 0;
+
+unregister_wakeup:
+	wakeup_source_unregister(hid_wake_lock);
+destroy_workqueue:
+	destroy_workqueue(giveback_wq);
+	return ret;
+}
+
+void usb_offload_hid_remove(void)
+{
+	int i;
+
+	unregister_trace_xhci_urb_dequeue_(hid_trace_dequeue, NULL);
+	tracepoint_synchronize_unregister();
+	for (i = 0; i < UO_HID_EP_NUM; i++)
+		cancel_delayed_work_sync(&hid_ep[i].giveback_work);
+	destroy_workqueue(giveback_wq);
+	wakeup_source_unregister(hid_wake_lock);
 }
 
 static void hid_dump_ep(struct hid_ep_info *hid, const char *tag)
@@ -1216,7 +1244,7 @@ static int sned_payload_to_adsp(unsigned int msg_id, void *payload,
 	return send_result;
 }
 
-static void xhci_mtk_trace_init(void)
+static int xhci_mtk_trace_init(void)
 {
-	WARN_ON(register_trace_xhci_urb_dequeue_(hid_trace_dequeue, NULL));
+	return register_trace_xhci_urb_dequeue_(hid_trace_dequeue, NULL);
 }

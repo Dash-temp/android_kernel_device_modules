@@ -539,6 +539,8 @@ struct ssusb_offload {
 	int	(*get_mode)(struct device *dev);
 };
 
+bool ssusb_offload_enabled(void);
+
 static inline struct mtu3 *gadget_to_mtu3(struct usb_gadget *g)
 {
 	return container_of(g, struct mtu3, g);

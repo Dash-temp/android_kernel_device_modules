@@ -455,19 +455,13 @@ same_role:
 	kfree(work_data);
 }
 
-void ssusb_set_mode(struct otg_switch_mtk *otg_sx, enum usb_role role)
+/* Caller holds ssusb_role_lock, including when retrying a deferred host request. */
+void ssusb_queue_mode(struct otg_switch_mtk *otg_sx, enum usb_role role)
 {
 	struct ssusb_mtk *ssusb = otg_sx_to_ssusb(otg_sx);
 	struct dr_work_data_mtk *work_data;
 
 	dev_info(ssusb->dev, "%s %s\n", __func__, usb_role_string(role));
-
-	otg_sx->latest_role = role;
-
-	if (otg_sx->op_mode != MTU3_DR_OPERATION_DUAL) {
-		dev_info(ssusb->dev, "op_mode %d, skip set role\n", otg_sx->op_mode);
-		return;
-	}
 
 	if (ssusb->dr_mode != USB_DR_MODE_OTG)
 		return;
@@ -476,7 +470,8 @@ void ssusb_set_mode(struct otg_switch_mtk *otg_sx, enum usb_role role)
 	 * USB offload is support but driver not prob done
 	 * Switch again after ssusb_offload_register() call
 	 */
-	if (role == USB_ROLE_HOST && ssusb->offload_support && !ssusb->offload) {
+	if (role == USB_ROLE_HOST && ssusb_offload_enabled() &&
+	    ssusb->offload_support && !ssusb->offload) {
 		dev_info(ssusb->dev, "offload not ready\n");
 		return;
 	}
@@ -495,6 +490,17 @@ void ssusb_set_mode(struct otg_switch_mtk *otg_sx, enum usb_role role)
 
 	work_data->desired_role = role;
 	queue_work(otg_sx->wq, &work_data->dr_work);
+}
+
+void ssusb_set_mode(struct otg_switch_mtk *otg_sx, enum usb_role role)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ssusb_role_lock, flags);
+	otg_sx->latest_role = role;
+	if (otg_sx->op_mode == MTU3_DR_OPERATION_DUAL)
+		ssusb_queue_mode(otg_sx, role);
+	spin_unlock_irqrestore(&ssusb_role_lock, flags);
 }
 
 static int ssusb_id_notifier(struct notifier_block *nb,
@@ -647,41 +653,40 @@ static ssize_t mode_store(struct device *dev,
 {
 	struct ssusb_mtk *ssusb = dev_get_drvdata(dev);
 	struct otg_switch_mtk *otg_sx = &ssusb->otg_switch;
-	enum usb_role role = otg_sx->latest_role;
+	enum usb_role role;
+	unsigned long flags;
 	int mode;
 
 	if (kstrtoint(buf, 10, &mode))
 		return -EINVAL;
 
+	if (mode < MTU3_DR_OPERATION_OFF || mode > MTU3_DR_OPERATION_DEVICE)
+		return -EINVAL;
+
+	spin_lock_irqsave(&ssusb_role_lock, flags);
 	dev_info(dev, "store mode %d op_mode %d\n", mode, otg_sx->op_mode);
+	role = otg_sx->latest_role;
 
 	if (otg_sx->op_mode != mode) {
 		/* set switch role */
 		switch (mode) {
 		case MTU3_DR_OPERATION_OFF:
-			otg_sx->latest_role = USB_ROLE_NONE;
+			role = USB_ROLE_NONE;
 			break;
 		case MTU3_DR_OPERATION_DUAL:
 			/* switch usb role to latest role */
 			break;
 		case MTU3_DR_OPERATION_HOST:
-			otg_sx->latest_role = USB_ROLE_HOST;
+			role = USB_ROLE_HOST;
 			break;
 		case MTU3_DR_OPERATION_DEVICE:
-			otg_sx->latest_role = USB_ROLE_DEVICE;
+			role = USB_ROLE_DEVICE;
 			break;
-		default:
-			return -EINVAL;
 		}
-		/* switch operation mode to normal temporarily */
-		otg_sx->op_mode = MTU3_DR_OPERATION_DUAL;
-		/* switch usb role */
-		ssusb_role_sw_set(otg_sx->role_sw, otg_sx->latest_role);
-		/* update operation mode */
 		otg_sx->op_mode = mode;
-		/* restore role */
-		otg_sx->latest_role = role;
+		ssusb_queue_mode(otg_sx, role);
 	}
+	spin_unlock_irqrestore(&ssusb_role_lock, flags);
 
 	return count;
 }

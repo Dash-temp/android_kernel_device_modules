@@ -10,6 +10,8 @@
 #ifndef _MTU3_DR_H_
 #define _MTU3_DR_H_
 
+extern spinlock_t ssusb_role_lock;
+
 #if IS_ENABLED(CONFIG_DEVICE_MODULES_USB_MTU3_HOST) || IS_ENABLED(CONFIG_DEVICE_MODULES_USB_MTU3_DUAL_ROLE)
 
 int ssusb_host_init(struct ssusb_mtk *ssusb, struct device_node *parent_dn);
@@ -119,6 +121,7 @@ int ssusb_otg_switch_init(struct ssusb_mtk *ssusb);
 void ssusb_otg_switch_exit(struct ssusb_mtk *ssusb);
 void ssusb_mode_switch(struct ssusb_mtk *ssusb, int to_host);
 void ssusb_set_mode(struct otg_switch_mtk *otg_sx, enum usb_role role);
+void ssusb_queue_mode(struct otg_switch_mtk *otg_sx, enum usb_role role);
 int ssusb_set_vbus(struct otg_switch_mtk *otg_sx, int is_on);
 void ssusb_set_force_mode(struct ssusb_mtk *ssusb,
 			  enum mtu3_dr_force_mode mode);
@@ -137,6 +140,10 @@ static inline void ssusb_mode_switch(struct ssusb_mtk *ssusb, int to_host)
 {}
 
 void ssusb_set_mode(struct otg_switch_mtk *otg_sx, enum usb_role role)
+{}
+
+static inline void ssusb_queue_mode(struct otg_switch_mtk *otg_sx,
+				  enum usb_role role)
 {}
 
 static inline int ssusb_set_vbus(struct otg_switch_mtk *otg_sx, int is_on)

@@ -291,6 +291,7 @@ struct usb_offload_dev {
 	void *tracer;
 };
 
+extern bool ssusb_offload_enabled(void);
 extern int ssusb_offload_register(struct ssusb_offload *offload);
 extern int ssusb_offload_unregister(struct ssusb_offload *offload);
 
@@ -341,7 +342,8 @@ extern int mtk_offload_get_rsv_mem_info(enum usb_offload_mem_id mem_id,
 extern bool is_sram(enum usb_offload_mem_id id);
 
 extern unsigned int hid_disable_offload;
-extern void usb_offload_hid_probe(void);
+extern int usb_offload_hid_probe(void);
+extern void usb_offload_hid_remove(void);
 extern int usb_offload_hid_start(void);
 extern void usb_offload_hid_finish(void);
 extern void usb_offload_hid_stop(void);
