@@ -300,18 +300,6 @@ static const struct drm_display_mode mode_60hz = {
 	.vtotal = FHD_FRAME_HEIGHT + FHD_VFP_60 + FHD_VSA_60 + FHD_VBP_60,			//VBP
 };
 
-static const struct drm_display_mode mode_30hz = {
-	.clock = FHD_CLK_30,
-	.hdisplay = FHD_FRAME_WIDTH,
-	.hsync_start = FHD_FRAME_WIDTH + FHD_HFP_30,								//HFP
-	.hsync_end = FHD_FRAME_WIDTH + FHD_HFP_30 + FHD_HSA_30,						//HSA
-	.htotal = FHD_FRAME_WIDTH + FHD_HFP_30 + FHD_HSA_30 + FHD_HBP_30,			//HBP
-	.vdisplay = FHD_FRAME_HEIGHT,
-	.vsync_start = FHD_FRAME_HEIGHT + FHD_VFP_30,								//VFP
-	.vsync_end = FHD_FRAME_HEIGHT + FHD_VFP_30 + FHD_VSA_30,					//VSA
-	.vtotal = FHD_FRAME_HEIGHT + FHD_VFP_30 + FHD_VSA_30 + FHD_VBP_30,			//VBP
-};
-
 /* Attention
  *  1."FPS_INIT_INDEX" is related to switch frame rate,when modifying the initial code should modify it.
  *  2."TEMP_INDEX"  is related to 3D Lut temperature compensation,when modifying the initial code should modify it.
