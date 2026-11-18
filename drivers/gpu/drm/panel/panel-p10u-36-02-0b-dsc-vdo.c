@@ -2498,19 +2498,11 @@ struct panel_desc {
 
 static int lcm_get_modes(struct drm_panel *panel, struct drm_connector *connector)
 {
-	struct drm_display_mode *mode_30, *mode_60, *mode_90, *mode_120;
+	struct drm_display_mode *mode_60, *mode_90, *mode_120;
 
-	mode_30 = drm_mode_duplicate(connector->dev, &mode_30hz);
-	if (!mode_30) {
-		dev_err(connector->dev->dev, "failed to add mode %ux%ux@%u\n",
-			mode_30hz.hdisplay, mode_30hz.vdisplay,
-			drm_mode_vrefresh(&mode_30hz));
-		return -ENOMEM;
-	}
-	drm_mode_set_name(mode_30);
-	mode_30->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
-	drm_mode_probed_add(connector, mode_30);
-
+	/* 30 Hz is intentionally not advertised: keeping it in the mode list
+	 * puts a 30 Hz entry in the Settings refresh-rate picker and lets the
+	 * framework drop the panel below the intended 60 Hz floor. */
 	mode_60 = drm_mode_duplicate(connector->dev, &mode_60hz);
 	if (!mode_60) {
 		dev_err(connector->dev->dev, "failed to add mode %ux%ux@%u\n",
